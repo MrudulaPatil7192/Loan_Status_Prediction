@@ -5,46 +5,48 @@ from flask import Flask, render_template_string, request, jsonify
 
 app = Flask(__name__)
 
-# Load the XGBoost Booster model
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model.xgb')
+# Resolve absolute path for Vercel serverless environment
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, 'model.xgb')
+FALLBACK_PATH = os.path.join(BASE_DIR, 'Xgboost_model.pkl')
 
-def load_model():
-    model = xgb.Booster()
-    if os.path.exists(MODEL_PATH):
-        model.load_model(MODEL_PATH)
-    else:
-        # Fallback to model.pkl if saved with pickle extension
-        fallback = os.path.join(os.path.dirname(__file__), 'Xgboost_model.pkl')
-        if os.path.exists(fallback):
-            model.load_model(fallback)
+booster = None
+
+def get_booster():
+    """Lazy loader to prevent startup crash if model loading takes extra time."""
+    global booster
+    if booster is None:
+        booster = xgb.Booster()
+        if os.path.exists(MODEL_PATH):
+            booster.load_model(MODEL_PATH)
+        elif os.path.exists(FALLBACK_PATH):
+            booster.load_model(FALLBACK_PATH)
         else:
-            raise FileNotFoundError("Please save your model data as 'model.xgb' in the app directory.")
-    return model
+            raise FileNotFoundError("Model file not found. Ensure model.xgb or model.pkl exists.")
+    return booster
 
-try:
-    booster = load_model()
-    # Extract feature names directly from the model metadata if present
-    FEATURE_NAMES = booster.feature_names or [
-        "no_of_dependents", "education", "self_employed", "income_annum",
-        "loan_amount", "loan_term", "cibil_score", "residential_assets_value",
-        "commercial_assets_value", "luxury_assets_value", "bank_asset_value"
-    ]
-except Exception as e:
-    print(f"Error loading model: {e}")
-    FEATURE_NAMES = [
-        "no_of_dependents", "education", "self_employed", "income_annum",
-        "loan_amount", "loan_term", "cibil_score", "residential_assets_value",
-        "commercial_assets_value", "luxury_assets_value", "bank_asset_value"
-    ]
+# Default feature names fallback
+DEFAULT_FEATURES = [
+    "no_of_dependents", "education", "self_employed", "income_annum",
+    "loan_amount", "loan_term", "cibil_score", "residential_assets_value",
+    "commercial_assets_value", "luxury_assets_value", "bank_asset_value"
+]
 
-# HTML/CSS/JS Template for modern, interactive user interface
+def get_feature_names():
+    try:
+        model = get_booster()
+        return model.feature_names or DEFAULT_FEATURES
+    except Exception:
+        return DEFAULT_FEATURES
+
+# HTML UI Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ML Prediction System</title>
+    <title>Loan Status Prediction</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -57,7 +59,7 @@ HTML_TEMPLATE = """
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         .card {
-            background: rgba(30, 41, 59, 0.7);
+            background: rgba(30, 41, 59, 0.85);
             backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 16px;
@@ -81,10 +83,6 @@ HTML_TEMPLATE = """
             padding: 12px;
             font-weight: 600;
             border-radius: 8px;
-            transition: transform 0.2s;
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
         }
         .result-badge {
             font-size: 1.25rem;
@@ -101,8 +99,8 @@ HTML_TEMPLATE = """
         <div class="row justify-content-center">
             <div class="col-lg-8">
                 <div class="card p-4 p-md-5">
-                    <h2 class="text-center mb-1 text-primary">Loan Eligibility Evaluator</h2>
-                    <p class="text-center text-muted mb-4">Interactive XGBoost Model Interface</p>
+                    <h2 class="text-center mb-1 text-primary">Loan Approval Predictor</h2>
+                    <p class="text-center text-muted mb-4">ML Serverless Deployment</p>
                     
                     <form id="predictForm">
                         <div class="row g-3">
@@ -113,8 +111,8 @@ HTML_TEMPLATE = """
                                 </label>
                                 {% if feature in ['education', 'self_employed'] %}
                                 <select class="form-select" id="{{ feature }}" name="{{ feature }}" required>
-                                    <option value="0">No / Graduate (0)</option>
-                                    <option value="1">Yes / Not Graduate (1)</option>
+                                    <option value="0">Graduate / No (0)</option>
+                                    <option value="1">Not Graduate / Yes (1)</option>
                                 </select>
                                 {% else %}
                                 <input type="number" step="any" class="form-control" id="{{ feature }}" name="{{ feature }}" placeholder="0" required>
@@ -155,27 +153,25 @@ HTML_TEMPLATE = """
                 });
 
                 const result = await response.json();
+                resultBox.style.display = 'block';
                 
                 if (result.status === 'success') {
                     const probPercent = (result.probability * 100).toFixed(2);
-                    resultBox.style.display = 'block';
-                    
                     if (result.prediction === 1) {
                         resultBox.className = 'result-badge bg-success bg-opacity-25 text-success border border-success';
-                        resultBox.innerHTML = `<strong>Approved / High Confidence</strong><br>Probability Score: ${probPercent}%`;
+                        resultBox.innerHTML = `<strong>Loan Approved</strong><br>Confidence Score: ${probPercent}%`;
                     } else {
                         resultBox.className = 'result-badge bg-danger bg-opacity-25 text-danger border border-danger';
-                        resultBox.innerHTML = `<strong>Rejected / Low Confidence</strong><br>Probability Score: ${probPercent}%`;
+                        resultBox.innerHTML = `<strong>Loan Rejected</strong><br>Confidence Score: ${probPercent}%`;
                     }
                 } else {
-                    resultBox.style.display = 'block';
                     resultBox.className = 'result-badge bg-warning bg-opacity-25 text-warning border border-warning';
                     resultBox.innerText = 'Error: ' + result.message;
                 }
             } catch (err) {
                 resultBox.style.display = 'block';
                 resultBox.className = 'result-badge bg-danger bg-opacity-25 text-danger border border-danger';
-                resultBox.innerText = 'Failed to fetch response from server.';
+                resultBox.innerText = 'Failed to communicate with server.';
             } finally {
                 submitBtn.innerText = "Predict Outcome";
                 submitBtn.disabled = false;
@@ -188,19 +184,20 @@ HTML_TEMPLATE = """
 
 @app.route('/', methods=['GET'])
 def index():
-    return render_template_string(HTML_TEMPLATE, features=FEATURE_NAMES)
+    features = get_feature_names()
+    return render_template_string(HTML_TEMPLATE, features=features)
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
         data = request.get_json()
+        features = get_feature_names()
         
-        # Prepare vector in the exact feature sequence expected by the model
-        feature_values = [data[feat] for feat in FEATURE_NAMES]
-        dmatrix = xgb.DMatrix(np.array([feature_values]), feature_names=FEATURE_NAMES)
+        feature_values = [data[feat] for feat in features]
+        dmatrix = xgb.DMatrix(np.array([feature_values]), feature_names=features)
         
-        # Perform prediction
-        probs = booster.predict(dmatrix)
+        model = get_booster()
+        probs = model.predict(dmatrix)
         probability = float(probs[0])
         prediction = int(probability >= 0.5)
 
@@ -214,6 +211,9 @@ def predict():
             'status': 'error',
             'message': str(e)
         }), 400
+
+# Serverless entry point
+app_instance = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
