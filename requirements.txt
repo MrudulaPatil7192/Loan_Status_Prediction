@@ -2,4 +2,4 @@ Flask
 pandas
 numpy
 gunicorn
-xgboost
+
